@@ -1,60 +1,38 @@
-import os
 import json
 import urllib.request
-import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
-def generate_metadata(topic):
-    api_key = os.environ.get("AI_API_KEY")
-
-    if not api_key:
-        raise ValueError("AI_API_KEY secret is missing.")
-
-    prompt = f"""
-Create YouTube Shorts metadata for this topic: {topic}
-
-Return ONLY valid JSON with these fields:
-{{
-  "title": "Catchy title under 100 characters",
-  "description": "Engaging description",
-  "hashtags": ["#Shorts", "#RelevantHashtag"]
-}}
-Use relevant hashtags. Do not invent facts.
-"""
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/"
-        "models/gemini-3.8-flash:generateContent"
-        f"?key={api_key}"
+def find_trending_topic():
+    url = "https://trends.google.com/trending/rss?geo=US"
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0"}
     )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        root = ET.fromstring(response.read())
 
-    data = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
+    items = root.findall(".//item")
+    if not items:
+        raise RuntimeError("No trending topics found")
+
+    return items[0].findtext("title", "Science and technology")
+
+def main():
+    config = json.loads(Path("config.json").read_text())
+    topic = find_trending_topic()
+
+    job = {
+        "topic": topic,
+        "niche": config["niche"],
+        "audience": config["target_audience"],
+        "language": config["video_language"],
+        "status": "idea_ready"
     }
 
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(data).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST"
+    Path("content_queue.json").write_text(
+        json.dumps(job, indent=2)
     )
-    
-    for attempt in range(3):
-            try:
-                with urllib.request.urlopen(request, timeout=120) as response:
-                    result = json.loads(response.read().decode("utf-8"))
-                break
-            except urllib.error.HTTPError as e:
-                if e.code != 503 or attempt == 2:
-                    raise
-                time.sleep(2 ** (attempt + 1))
-
-    text = result["candidates"][0]["content"]["parts"][0]["text"]
-    text = text.strip().removeprefix("```json").removesuffix("```").strip()
-
-    return json.loads(text)
+    print(json.dumps(job, indent=2))
 
 if __name__ == "__main__":
-    metadata = generate_metadata("Amazing space facts")
-    print(json.dumps(metadata, indent=2))
+    main()
