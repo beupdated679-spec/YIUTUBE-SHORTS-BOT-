@@ -1,247 +1,313 @@
 import os
-import json
-import re
-import subprocess
-import urllib.request
+import random
+import requests
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from gtts import gTTS
+from moviepy.editor import (
+    ImageClip,
+    AudioFileClip,
+    concatenate_videoclips
+)
 
-API_KEY = os.environ["AI_API_KEY"]
-Path("output").mkdir(exist_ok=True)
+# ---------------- SETTINGS ----------------
 
-def make_script(topic):
-    prompt = (
-        "Write an accurate, exciting 40-second YouTube Shorts narration "
-        "about this science/technology topic: " + topic +
-        ". Audience: United States. English. About 85 words. "
-        "Return only the spoken narration, no title or stage directions."
-    )
-    request = urllib.request.Request(
-        "https://generativelanguage.googleapis.com/v1beta/"
-        "models/gemini-3.5-flash:generateContent?key=" + API_KEY,
-        data=json.dumps({
-            "contents": [{"parts": [{"text": prompt}]}]
-        }).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        data = json.loads(response.read().decode())
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+WIDTH = 1080
+HEIGHT = 1920
+DURATION = 30
+SEGMENT_SECONDS = 3
+FPS = 24
 
-def main():
-    config = json.loads(Path("config.json").read_text())
-    with open("content_queue.json", encoding="utf-8") as f:
-        queue = json.load(f)
+OUTPUT_DIR = Path("output")
+ASSET_DIR = Path("assets")
+OUTPUT_DIR.mkdir(exist_ok=True)
+ASSET_DIR.mkdir(exist_ok=True)
 
-    topic = queue["topic"]
-    script = make_script(topic)
-    Path("output/script.txt").write_text(script, encoding="utf-8")
+OUTPUT_VIDEO = OUTPUT_DIR / "science_short.mp4"
 
-    # Generate narration
-    gTTS(text=script, lang="en", tld="com").save("output/voice.mp3")
+# Add your Pexels API key in GitHub Codespaces Secrets.
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 
-    # Create five different vertical science scenes
-    from PIL import Image, ImageDraw
-    import math
+# Change these for each new video.
+TOPIC = "Why does space look black?"
+SCRIPT = (
+    "Have you ever wondered why space looks black? "
+    "The Sun produces enormous amounts of light, but space "
+    "is almost empty. On Earth, the atmosphere scatters sunlight "
+    "across the sky. In space, there is very little matter to "
+    "scatter that light toward your eyes. That is why the sky "
+    "between the stars looks dark. Stars are still shining, "
+    "but the universe is incredibly vast. Did you know that? "
+    "Tell us what science mystery we should explain next."
+)
 
-    W, H = 720, 1280
-    scenes = [
-        ("SPACE EXPLORATION", "planet"),
-        ("THE ATOM", "atom"),
-        ("FUTURE TECHNOLOGY", "chip"),
-        ("MYSTERIES OF SPACE", "stars"),
-        ("SCIENCE CHANGES EVERYTHING", "waves"),
-    ]
+# Ten visual searches, one for every 3-second segment.
+VISUAL_QUERIES = [
+    "planet earth from space",
+    "stars galaxy deep space",
+    "sun glowing in space",
+    "astronaut floating in space",
+    "milky way galaxy",
+    "earth atmosphere from orbit",
+    "colorful nebula space",
+    "distant stars universe",
+    "planet surface from orbit",
+    "deep space telescope"
+]
 
-    colors = [
-        (10, 20, 75), (20, 10, 65), (5, 45, 65),
-        (25, 10, 75), (5, 30, 65)
-    ]
+BACKGROUND_COLORS = [
+    (10, 20, 65),
+    (40, 10, 75),
+    (100, 25, 20),
+    (5, 50, 85),
+    (35, 10, 60),
+    (5, 65, 75),
+    (80, 15, 55),
+    (15, 30, 90),
+    (65, 35, 10),
+    (5, 15, 45)
+]
 
-    for i, (heading, kind) in enumerate(scenes):
-        img = Image.new("RGB", (W, H), colors[i])
-        d = ImageDraw.Draw(img)
+# ------------------------------------------
 
-        # Star field
-        for x in range(35, W, 85):
-            for y in range(60, H, 110):
-                d.ellipse((x, y, x+4, y+4), fill=(170, 210, 255))
 
-        cx, cy = W // 2, 570
+def get_pexels_image(query, index):
+    """Download a relevant photo from Pexels when available."""
 
-        if kind == "planet":
-            d.ellipse((cx-150, cy-150, cx+150, cy+150),
-                      fill=(55, 120, 240), outline="white", width=4)
-            d.ellipse((cx-220, cy-45, cx+220, cy+45),
-                      outline=(255, 190, 100), width=12)
+    if not PEXELS_API_KEY:
+        return None
 
-        elif kind == "atom":
-            for angle in (0, 60, 120):
-                d.ellipse((cx-170, cy-65, cx+170, cy+65),
-                          outline=(80, 220, 255), width=5)
-                # Rotate the ellipse for the next orbital direction
-                # by drawing a simple angled orbital line.
-                a = math.radians(angle)
-                x1 = cx - int(170 * math.cos(a))
-                y1 = cy - int(170 * math.sin(a))
-                x2 = cx + int(170 * math.cos(a))
-                y2 = cy + int(170 * math.sin(a))
-                d.line((x1, y1, x2, y2), fill=(80, 220, 255), width=3)
-            d.ellipse((cx-22, cy-22, cx+22, cy+22), fill="yellow")
+    try:
+        response = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": PEXELS_API_KEY},
+            params={"query": query, "per_page": 5},
+            timeout=20
+        )
+        response.raise_for_status()
+        photos = response.json().get("photos", [])
 
-        elif kind == "chip":
-            d.rectangle((cx-120, cy-120, cx+120, cy+120),
-                        fill=(20, 110, 140), outline="cyan", width=8)
-            for k in range(-100, 101, 40):
-                d.line((cx+k, cy-120, cx+k, cy-175), fill="cyan", width=8)
-                d.line((cx+k, cy+120, cx+k, cy+175), fill="cyan", width=8)
-                d.line((cx-120, cy+k, cx-175, cy+k), fill="cyan", width=8)
-                d.line((cx+120, cy+k, cx+175, cy+k), fill="cyan", width=8)
+        if not photos:
+            return None
 
-        elif kind == "stars":
-            for r in (70, 120, 170, 220):
-                d.ellipse((cx-r, cy-r, cx+r, cy+r),
-                          outline=(100, 130, 255), width=3)
-            d.ellipse((cx-45, cy-45, cx+45, cy+45),
-                      fill=(255, 190, 90))
+        photo = photos[index % len(photos)]
+        image_url = photo["src"]["portrait"]
 
-        else:
-            points = []
-            for x in range(0, W, 5):
-                y = cy + int(100 * math.sin(x / 35))
-                points.append((x, y))
-            d.line(points, fill=(70, 240, 255), width=8)
-            points2 = [(x, y+90) for x, y in points]
-            d.line(points2, fill=(255, 100, 220), width=5)
+        image_response = requests.get(image_url, timeout=25)
+        image_response.raise_for_status()
 
-        try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 38
+        return Image.open(
+            BytesIO(image_response.content)
+        ).convert("RGB")
+
+    except (requests.RequestException, ValueError, KeyError) as error:
+        print(f"Image download failed for '{query}': {error}")
+        return None
+
+
+def make_background(query, index):
+    """Prepare a vertical image with a changing color overlay."""
+
+    image = get_pexels_image(query, index)
+
+    if image is None:
+        # Reliable offline fallback: create a space-like background.
+        image = Image.new(
+            "RGB",
+            (WIDTH, HEIGHT),
+            BACKGROUND_COLORS[index]
+        )
+        draw = ImageDraw.Draw(image)
+
+        random.seed(index + 100)
+        for _ in range(220):
+            x = random.randint(0, WIDTH - 1)
+            y = random.randint(0, HEIGHT - 1)
+            radius = random.randint(1, 4)
+            draw.ellipse(
+                (x, y, x + radius, y + radius),
+                fill=(220, 225, 255)
             )
-        except OSError:
-            font = ImageFont.load_default()
 
-        d.text((35, 170), heading, font=font, fill="white",
-               stroke_width=2, stroke_fill="black")
-        img.save(f"output/scene{i+1}.png")
+        # Add a soft colored planet.
+        px = random.randint(200, WIDTH - 200)
+        py = random.randint(350, HEIGHT - 500)
+        radius = random.randint(100, 240)
+        draw.ellipse(
+            (px - radius, py - radius, px + radius, py + radius),
+            fill=BACKGROUND_COLORS[index]
+        )
 
-    # Captions from the generated narration
-    sentences = re.split(r'(?<=[.!?])\s+', script)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    weights = [max(1, len(s.split())) for s in sentences]
-    total = sum(weights) or 1
+    # Crop to fill the entire vertical frame.
+    image_ratio = image.width / image.height
+    target_ratio = WIDTH / HEIGHT
 
-    def stamp(seconds):
-        ms = int(seconds * 1000)
-        hh, ms = divmod(ms, 3600000)
-        mm, ms = divmod(ms, 60000)
-        ss, ms = divmod(ms, 1000)
-        return f"{hh:02}:{mm:02}:{ss:02},{ms:03}"
+    if image_ratio > target_ratio:
+        new_width = int(image.height * target_ratio)
+        left = (image.width - new_width) // 2
+        image = image.crop(
+            (left, 0, left + new_width, image.height)
+        )
+    else:
+        new_height = int(image.width / target_ratio)
+        top = (image.height - new_height) // 2
+        image = image.crop(
+            (0, top, image.width, top + new_height)
+        )
 
-    elapsed = 0
-    with open("output/captions.srt", "w", encoding="utf-8") as f:
-        for i, sentence in enumerate(sentences, 1):
-            end = elapsed + 40 * weights[i-1] / total
-            f.write(
-                f"{i}\n{stamp(elapsed)} --> {stamp(end)}\n"
-                f"{sentence}\n\n"
-            )
-            elapsed = end
+    image = image.resize((WIDTH, HEIGHT))
 
-    # Join five scenes, add subtitles and narration
-    inputs = []
-    for i in range(1, 6):
-        inputs += ["-loop", "1", "-framerate", "24",
-                   "-t", "8", "-i", f"output/scene{i}.png"]
-    inputs += ["-i", "output/voice.mp3"]
-
-    filter_graph = (
-        "[0:v][1:v][2:v][3:v][4:v]concat=n=5:v=1:a=0,"
-        "subtitles=output/captions.srt:force_style="
-        "'FontName=DejaVu Sans,FontSize=20,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,BorderStyle=1,Outline=2,"
-        "Alignment=2,MarginV=140'[v]"
+    # Apply the segment's distinct color tint.
+    tint = Image.new(
+        "RGB", image.size, BACKGROUND_COLORS[index]
     )
+    image = Image.blend(image, tint, 0.28)
+    image = ImageEnhance.Contrast(image).enhance(1.15)
 
-    subprocess.run([
-        "ffmpeg", "-y", *inputs,
-        "-filter_complex", filter_graph,
-        "-map", "[v]", "-map", "5:a",
-        "-t", "40", "-r", "24",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-shortest",
-        "output/science_short.mp4"
-    ], check=True)
+    # Darken the image so white captions remain readable.
+    image = ImageEnhance.Brightness(image).enhance(0.70)
 
-    print("Video created with five changing scenes!")
+    path = ASSET_DIR / f"background_{index + 1:02d}.jpg"
+    image.save(path, quality=90)
+    return str(path)
+
+
+def make_caption_image(text, index):
+    """Create a transparent caption overlay."""
+
+    overlay = Image.new(
+        "RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0)
+    )
+    draw = ImageDraw.Draw(overlay)
 
     try:
         font = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            54
         )
     except OSError:
         font = ImageFont.load_default()
 
-    title = topic[:65]
-    words = title.split()
-    lines, line = [], ""
+    words = text.split()
+    lines = []
+    line = ""
+
     for word in words:
-        if len(line + " " + word) > 20:
-            lines.append(line)
+        candidate = (line + " " + word).strip()
+        if draw.textbbox((0, 0), candidate, font=font)[2] > 900:
+            if line:
+                lines.append(line)
             line = word
         else:
-            line = (line + " " + word).strip()
+            line = candidate
+
     if line:
         lines.append(line)
 
-    y = 470
+    line_height = 72
+    total_height = len(lines) * line_height
+    y = int(HEIGHT * 0.68 - total_height / 2)
+
     for line in lines:
-        box = draw.textbbox((0, 0), line, font=font)
-        draw.text(((w - (box[2]-box[0]))/2, y), line,
-                  font=font, fill="white", stroke_width=2,
-                  stroke_fill=(0, 0, 0))
-        y += 65
+        box = draw.textbbox((0, 0), line, font=font, stroke_width=2)
+        text_width = box[2] - box[0]
+        x = (WIDTH - text_width) // 2
 
-    img.save("output/background.png")
+        draw.text(
+            (x, y),
+            line,
+            font=font,
+            fill="white",
+            stroke_width=3,
+            stroke_fill="black"
+        )
+        y += line_height
 
-    # Make simple timed captions from the narration
-    sentences = re.split(r'(?<=[.!?])\s+', script)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    duration = 40.0
-    weights = [max(1, len(s.split())) for s in sentences]
-    total = sum(weights)
-    elapsed = 0.0
+    path = ASSET_DIR / f"caption_{index + 1:02d}.png"
+    overlay.save(path)
+    return str(path)
 
-    def stamp(seconds):
-        ms = int(seconds * 1000)
-        hh, ms = divmod(ms, 3600000)
-        mm, ms = divmod(ms, 60000)
-        ss, ms = divmod(ms, 1000)
-        return f"{hh:02}:{mm:02}:{ss:02},{ms:03}"
 
-    with open("output/captions.srt", "w", encoding="utf-8") as f:
-        for i, sentence in enumerate(sentences, 1):
-            end = elapsed + duration * weights[i-1] / total
-            f.write(f"{i}\n{stamp(elapsed)} --> {stamp(end)}\n{sentence}\n\n")
-            elapsed = end
+def main():
+    print("Creating 30-second science Short...")
 
-    # Render the vertical MP4 with voice and captions
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-loop", "1", "-framerate", "24",
-        "-i", "output/background.png",
-        "-i", "output/voice.mp3",
-        "-vf", "subtitles=output/captions.srt:force_style='FontName=DejaVu Sans,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Alignment=2,MarginV=140'",
-        "-t", str(duration),
-        "-r", "24", "-s", "720x1280",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-shortest",
-        "output/science_short.mp4"
-    ], check=True)
+    print("Generating voice...")
+    voice_path = OUTPUT_DIR / "voice.mp3"
+    gTTS(text=SCRIPT, lang="en", slow=False).save(str(voice_path))
 
-    print("Video created: output/science_short.mp4")
+    audio = AudioFileClip(str(voice_path))
+
+    # Divide narration into ten timed caption sections.
+    words = SCRIPT.split()
+    segment_words = []
+
+    for i in range(10):
+        start = round(i * len(words) / 10)
+        end = round((i + 1) * len(words) / 10)
+        segment_words.append(" ".join(words[start:end]))
+
+    clips = []
+
+    for i, query in enumerate(VISUAL_QUERIES):
+        print(f"Preparing visual {i + 1}/10...")
+
+        background_path = make_background(query, i)
+        caption_path = make_caption_image(segment_words[i], i)
+
+        background = (
+            ImageClip(background_path)
+            .set_duration(SEGMENT_SECONDS)
+        )
+
+        caption = (
+            ImageClip(caption_path, transparent=True)
+            .set_duration(SEGMENT_SECONDS)
+        )
+
+        segment = concatenate_videoclips(
+            [background, caption],
+            method="compose"
+        ).set_duration(SEGMENT_SECONDS)
+
+        clips.append(segment)
+
+    print("Combining visuals and narration...")
+
+    video = concatenate_videoclips(clips, method="compose")
+    video = video.set_duration(DURATION)
+
+    # Trim long narration or pad short narration with silence.
+    if audio.duration >= DURATION:
+        audio = audio.subclip(0, DURATION)
+    else:
+        from moviepy.audio.AudioClip import AudioClip
+
+        silence_duration = DURATION - audio.duration
+        silence = AudioClip(
+            lambda t: 0,
+            duration=silence_duration,
+            fps=44100
+        )
+        from moviepy.audio.AudioClip import concatenate_audioclips
+        audio = concatenate_audioclips([audio, silence])
+
+    video = video.set_audio(audio)
+
+    video.write_videofile(
+        str(OUTPUT_VIDEO),
+        fps=FPS,
+        codec="libx264",
+        audio_codec="aac",
+        preset="ultrafast",
+        threads=2
+    )
+
+    video.close()
+    audio.close()
+
+    print(f"SUCCESS! Your video is saved at: {OUTPUT_VIDEO}")
+
 
 if __name__ == "__main__":
     main()
