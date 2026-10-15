@@ -1,6 +1,7 @@
 import os
 import json
 import urllib.request
+import time
 
 def generate_metadata(topic):
     api_key = os.environ.get("AI_API_KEY")
@@ -39,8 +40,15 @@ Use relevant hashtags. Do not invent facts.
         method="POST"
     )
 
-    with urllib.request.urlopen(request, timeout=60) as response:
-        result = json.loads(response.read().decode("utf-8"))
+    for attempt in range(3):
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        break
+    except urllib.error.HTTPError as e:
+        if e.code != 503 or attempt == 2:
+            raise
+        time.sleep(2 ** (attempt + 1))
 
     text = result["candidates"][0]["content"]["parts"][0]["text"]
     text = text.strip().removeprefix("```json").removesuffix("```").strip()
