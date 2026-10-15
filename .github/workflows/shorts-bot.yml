@@ -1,4 +1,4 @@
-name: YouTube Shorts Bot
+name: YouTube Shorts Automation
 
 on:
   workflow_dispatch:
@@ -6,21 +6,25 @@ on:
     - cron: "0 4 * * *"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  run-bot:
+  create-idea:
     runs-on: ubuntu-latest
     steps:
-      - name: Download repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Run bot
-        env:
-          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+      - name: Find trending topic
         run: python bot.py
+
+      - name: Save content queue
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add content_queue.json
+          git diff --cached --quiet || git commit -m "Update content idea"
+          git push
