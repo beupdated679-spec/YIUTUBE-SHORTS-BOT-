@@ -19,7 +19,7 @@ def make_script(topic):
     )
     request = urllib.request.Request(
         "https://generativelanguage.googleapis.com/v1beta/"
-        "models/gemini-2.5-flash:generateContent?key=" + API_KEY,
+        "models/gemini-3.5-flash:generateContent?key=" + API_KEY,
         data=json.dumps({
             "contents": [{"parts": [{"text": prompt}]}]
         }).encode(),
