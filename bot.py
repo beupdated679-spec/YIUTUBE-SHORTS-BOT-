@@ -42,7 +42,7 @@ Use relevant hashtags. Do not invent facts.
     
     for attempt in range(3):
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
+                with urllib.request.urlopen(request, timeout=120) as response:
                     result = json.loads(response.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as e:
