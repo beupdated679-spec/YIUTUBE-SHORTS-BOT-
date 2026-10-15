@@ -1,27 +1,52 @@
+import os
 import json
+import urllib.request
 
 def generate_metadata(topic):
-    topic = topic.strip()
+    api_key = os.environ.get("AI_API_KEY")
 
-    if not topic:
-        raise ValueError("Please provide a video topic.")
+    if not api_key:
+        raise ValueError("AI_API_KEY secret is missing.")
 
-    title = f"Discover This Amazing Fact About {topic.title()}!"
+    prompt = f"""
+Create YouTube Shorts metadata for this topic: {topic}
 
-    description = (
-        f"Discover something interesting about {topic} "
-        "in this YouTube Short!\n\n"
-        f"What do you think about {topic}? Tell us in the comments."
+Return ONLY valid JSON with these fields:
+{{
+  "title": "Catchy title under 100 characters",
+  "description": "Engaging description",
+  "hashtags": ["#Shorts", "#RelevantHashtag"]
+}}
+Use relevant hashtags. Do not invent facts.
+"""
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-2.5-flash:generateContent"
+        f"?key={api_key}"
     )
 
-    hashtags = ["#Shorts", "#Facts", "#Science"]
-
-    return {
-        "title": title[:100],
-        "description": description + "\n\n" + " ".join(hashtags),
-        "hashtags": hashtags
+    data = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
     }
 
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    with urllib.request.urlopen(request, timeout=60) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    text = result["candidates"][0]["content"]["parts"][0]["text"]
+    text = text.strip().removeprefix("```json").removesuffix("```").strip()
+
+    return json.loads(text)
+
 if __name__ == "__main__":
-    result = generate_metadata("space")
-    print(json.dumps(result, indent=2))
+    metadata = generate_metadata("Amazing space facts")
+    print(json.dumps(metadata, indent=2))
